@@ -46,6 +46,7 @@
 static bool dbg_log_en = true;
 struct mt6375_chg_data *oplus_ddata;
 bool is_mtksvooc_project = false;
+bool g_support_icl_optimization = false;
 module_param(dbg_log_en, bool, 0644);
 #define mt_dbg(dev, fmt, ...) \
 	do { \
@@ -1189,6 +1190,10 @@ static int mt6375_chg_enable_bc12(struct mt6375_chg_data *ddata, bool en)
 		ret = mt6375_chg_set_usbsw(ddata, en ? USBSW_CHG : USBSW_USB);
 	if (ret)
 		return ret;
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	if (g_support_icl_optimization && en)
+		mt6375_chg_field_set(ddata, F_BC12_EN, 0);
+#endif
 	return mt6375_chg_field_set(ddata, F_BC12_EN, en);
 }
 
@@ -3082,11 +3087,21 @@ static int mt6375_chg_init_setting(struct mt6375_chg_data *ddata)
 		return ret;
 	}
 
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	if (!g_support_icl_optimization) {
+		ret = mt6375_chg_field_set(ddata, F_BC12_EN, 0);
+		if (ret < 0) {
+			dev_err(ddata->dev, "failed to disable bc12\n");
+			return ret;
+		}
+	}
+#else
 	ret = mt6375_chg_field_set(ddata, F_ILIM_EN, 0);
 	if (ret < 0) {
 		dev_err(ddata->dev, "failed to disable ilim\n");
 		return ret;
 	}
+#endif
 
 	ret = mt6375_chg_field_set(ddata, F_QON_RST_EN, 0);
 	if (ret < 0) {
@@ -3347,6 +3362,40 @@ bool mt6375_int_chrdet_attach(void)
 	}
 }
 EXPORT_SYMBOL(mt6375_int_chrdet_attach);
+
+int mt6375_force_get_port_stat_to_icl(void)
+{
+	int ret, current_limit = 0;
+	u32 val;
+
+	if (NULL == oplus_ddata) {
+		return -EINVAL;
+	}
+
+	ret = mt6375_chg_field_get(oplus_ddata, F_PORT_STAT, &val);
+	switch (val) {
+	case PORT_STAT_NOINFO:
+	case PORT_STAT_SDP:
+		current_limit = 500;
+		break;
+	case PORT_STAT_CDP:
+		current_limit = 1500;
+		break;
+	case PORT_STAT_APPLE_10W:
+	case PORT_STAT_SAMSUNG:
+	case PORT_STAT_APPLE_5W:
+	case PORT_STAT_APPLE_12W:
+	case PORT_STAT_UNKNOWN_TA:
+	case PORT_STAT_DCP:
+		current_limit = 2000;
+		break;
+	default:
+		current_limit = 2000;
+		break;
+	}
+	return current_limit;
+}
+EXPORT_SYMBOL(mt6375_force_get_port_stat_to_icl);
 #endif
 
 static ssize_t shipping_mode_store(struct device *dev,
@@ -3396,6 +3445,11 @@ static int mt6375_chg_probe(struct platform_device *pdev)
 			return PTR_ERR(ddata->rmap_fields[i]);
 		}
 	}
+
+#ifdef OPLUS_FEATURE_CHG_BASIC
+	g_support_icl_optimization = of_property_read_bool(dev->of_node, "support_icl_optimization");
+	dev_info(dev, "%s: support_icl_optimization=%d\n", __func__, g_support_icl_optimization);
+#endif
 
 	ret = mt6375_chg_get_pdata(dev);
 	if (ret < 0) {
